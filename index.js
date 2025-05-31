@@ -1,16 +1,20 @@
+require('dotenv').config();
 const express = require('express');
 const { google } = require('googleapis');
 const { middleware, Client } = require('@line/bot-sdk');
-require('dotenv').config();
 
 const app = express();
+app.use(express.json());
 
 const lineConfig = {
-  channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN,
-  channelSecret: process.env.LINE_CHANNEL_SECRET,
+  channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
+  channelSecret: process.env.CHANNEL_SECRET,
 };
 
 const lineClient = new Client(lineConfig);
+const GOOGLE_CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
+const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
+const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
 
 app.post('/webhook', middleware(lineConfig), async (req, res) => {
   const events = req.body.events;
@@ -34,9 +38,9 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 
 async function saveTask(userId, task) {
   const auth = new google.auth.JWT(
-    process.env.GOOGLE_CLIENT_EMAIL,
+    GOOGLE_CLIENT_EMAIL,
     null,
-    process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    GOOGLE_PRIVATE_KEY,
     ['https://www.googleapis.com/auth/spreadsheets']
   );
 
@@ -44,8 +48,8 @@ async function saveTask(userId, task) {
   const now = new Date().toISOString();
 
   await sheets.spreadsheets.values.append({
-    spreadsheetId: process.env.SPREADSHEET_ID,
-    range: 'Sheet1!A:D',
+    spreadsheetId: SPREADSHEET_ID,
+    range: 'シート1!A:D',
     valueInputOption: 'USER_ENTERED',
     requestBody: {
       values: [[now, userId, task, '未完了']],
@@ -53,7 +57,7 @@ async function saveTask(userId, task) {
   });
 }
 
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on http://localhost:${PORT}`);
 });
