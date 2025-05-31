@@ -51,7 +51,7 @@ async function saveTask(userId, task) {
     range: 'シート1!A:D',
     valueInputOption: 'USER_ENTERED',
     requestBody: {
-      values: [[now, userId, task, '未完了']],
+      values: [[userId, task, '未完了']],
     },
   });
 }
