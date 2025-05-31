@@ -17,5 +17,9 @@
     "url": "https://github.com/kkkosei/Beginner-s-Hackathon/issues"
   },
   "homepage": "https://github.com/kkkosei/Beginner-s-Hackathon#readme",
-  "description": ""
+  "description": "",
+  "dependencies": {
+    "@line/bot-sdk": "^9.9.0",
+    "express": "^5.1.0"
+  }
 }
