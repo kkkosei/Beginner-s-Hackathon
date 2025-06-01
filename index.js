@@ -21,6 +21,32 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       const userId = event.source.userId;
       const text = event.message.text.trim();
 
+            // ── 使い方メッセージ検出 ──
+      if (text.includes('使い方')) {
+        const usage = `📌 Botの使い方ガイド：
+
+        ✅ タスクを追加
+        形式：「タスク名 締切日」
+        例：「レポート提出 2025-06-02」
+
+        ✅ タスクを完了（削除）
+        形式：「タスク名 完了」または「タスク名 完了しました」
+        例：「レポート提出 完了」
+
+        📅 締切日までのタスク一覧
+        形式：「YYYY-MM-DDまでのタスクを教えて」
+        例：「2025-06-10までのタスクを教えて」
+
+        お気軽に試してみてください！`;
+
+        await lineClient.replyMessage(event.replyToken, {
+          type: 'text',
+          text: usage,
+        });
+        return;
+      }
+
+
       // ────────────────────────────────────────────────────────────────────
       // ① 完了メッセージ判定：ステータスを廃止した場合も、完了報告でタスクを削除
       const completeMatch = text.match(/^(.+?)(?:完了しました|完了)$/);
