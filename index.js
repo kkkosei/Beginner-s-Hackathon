@@ -44,9 +44,10 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
           return;
         }
 
-        const message = filtered.map(([, task, deadline, status]) =>
-          `・${task}（締切: ${deadline}, 状態: ${status}）`
-        ).join('\n');
+        // ステータスではなく「タスク名（締切）」だけを並べる
+        const message = filtered
+          .map(([, task, deadline]) => `・${task}（締切: ${deadline}）`)
+          .join('\n');
 
         await lineClient.replyMessage(event.replyToken, {
           type: 'text',
@@ -107,16 +108,69 @@ async function fetchTasks(userId) {
     GOOGLE_PRIVATE_KEY,
     ['https://www.googleapis.com/auth/spreadsheets']
   );
-
   const sheets = google.sheets({ version: 'v4', auth });
 
   const result = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
-    range: 'シート1!A:D',
+    range: 'シート1!A:C',
   });
 
-  return result.data.values || [];
+  return result.data.values || []; // 1行あたり [ユーザーID, タスク名, 締切]
 }
+
+async function deleteTask(userId, taskName) {
+  const auth = new google.auth.JWT(
+    GOOGLE_CLIENT_EMAIL,
+    null,
+    GOOGLE_PRIVATE_KEY,
+    ['https://www.googleapis.com/auth/spreadsheets']
+  );
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  // A～C列を取得する
+  const getRes = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: 'シート1!A:C',
+  });
+  const rows = getRes.data.values || [];
+
+  // シート情報から sheetId を取得
+  const meta = await sheets.spreadsheets.get({
+    spreadsheetId: SPREADSHEET_ID,
+    includeGridData: false,
+  });
+  const sheetInfo = meta.data.sheets.find(s => s.properties.title === 'シート1');
+  if (!sheetInfo) throw new Error('シート1 が見つかりませんでした。');
+  const sheetId = sheetInfo.properties.sheetId;
+
+  // 削除すべき行を列挙（行インデックスは 0ベース）
+  const deleteRequests = [];
+  rows.forEach((row, i) => {
+    const [uid, tName] = row;
+    if (uid === userId && tName === taskName) {
+      deleteRequests.push({
+        deleteDimension: {
+          range: {
+            sheetId: sheetId,
+            dimension: 'ROWS',
+            startIndex: i,
+            endIndex: i + 1,
+          },
+        },
+      });
+    }
+  });
+
+  if (deleteRequests.length === 0) return 0;
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: { requests: deleteRequests },
+  });
+
+  return deleteRequests.length;
+}
+
 
 const PORT = 3000;
 app.listen(PORT, () => {
