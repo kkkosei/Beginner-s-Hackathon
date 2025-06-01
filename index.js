@@ -9,6 +9,7 @@ const lineConfig = {
   channelSecret: process.env.CHANNEL_SECRET,
 };
 const lineClient = new Client(lineConfig);
+
 const GOOGLE_CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
 const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
 const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
@@ -17,12 +18,43 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
   const events = req.body.events;
 
   for (const event of events) {
+    // ────────────────────────────────────────────────────────────────────
+    // ① フォロー（友だち追加）されたときの使い方メッセージ送信
+    if (event.type === 'follow') {
+      await lineClient.replyMessage(event.replyToken, {
+        type: 'text',
+        text: [
+          'こんにちは！ToDo管理Botへようこそ😊',
+          '',
+          '――――――――――――――――――――――',
+          '■ 使い方 ■',
+          '',
+          '① タスクを登録したいとき：',
+          '　「タスク名 YYYY-MM-DD」',
+          '　例）レポート提出 2025-06-10',
+          '',
+          '② タスクが完了したとき：',
+          '　「タスク名完了」 または 「タスク名完了しました」',
+          '　例）レポート提出完了',
+          '',
+          '③ 締切○○までのタスクを一覧で見たいとき：',
+          '　「YYYY-MM-DDまでのタスクを教えて」',
+          '　例）2025-06-15までのタスクを教えて',
+          '――――――――――――――――――――――',
+          '上記形式で送っていただくと、自動でスプレッドシートに登録・削除・一覧取得を行います！',
+        ].join('\n'),
+      });
+      // フォロー時は以降の「メッセージ受信処理」は不要なので continue
+      continue;
+    }
+    // ────────────────────────────────────────────────────────────────────
+
+    // ② メッセージ受信時の処理
     if (event.type === 'message' && event.message.type === 'text') {
       const userId = event.source.userId;
       const text = event.message.text.trim();
 
-      // ────────────────────────────────────────────────────────────────────
-      // ① 完了メッセージ判定：ステータスを廃止した場合も、完了報告でタスクを削除
+      // ── 1) 完了報告（タスク削除）判定 ──
       const completeMatch = text.match(/^(.+?)(?:完了しました|完了)$/);
       if (completeMatch) {
         const taskName = completeMatch[1].trim();
@@ -36,19 +68,16 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
         } else {
           await lineClient.replyMessage(event.replyToken, {
             type: 'text',
-            text: `タスク「${taskName}」をスプレッドシートから削除しました。（${deletedCount} 行）`,
+            text: `タスク「${taskName}」をスプレッドシートから削除しました。（${deletedCount} 件）`,
           });
         }
-        // 完了処理なので登録処理や一覧処理は行わず return
         return;
       }
-      // ────────────────────────────────────────────────────────────────────
 
-      // ── ② 期限（〇〇までのタスク一覧）照会判定 ──
+      // ── 2) 期限付き一覧取得判定 ──
       const deadlineMatch = text.match(/^(\d{4}-\d{2}-\d{2})までのタスクを教えて$/);
       if (deadlineMatch) {
         const untilDate = deadlineMatch[1];
-
         const tasks = await fetchTasks(userId);
         const filtered = tasks.filter(([uid, , deadline]) => {
           if (uid !== userId) return false;
@@ -76,17 +105,15 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
         });
         return;
       }
-      // ────────────────────────────────────────────────────────────────────
 
-      // ── ③ 新規タスク登録 ――
-      // 「タスク名 締切」の2要素のみを想定
+      // ── 3) 新規タスク登録 ──
       const parts = text.split(/\s+/);
       const [task, deadlineRaw] = parts;
 
       if (!task || !deadlineRaw) {
         await lineClient.replyMessage(event.replyToken, {
           type: 'text',
-          text: `「タスク名 締切日付」の形式で送信してください。\n例: レポート提出 2025-06-02`,
+          text: `「タスク名 日付」の形式で送信してください。\n例）レポート提出 2025-06-10`,
         });
         return;
       }
@@ -96,16 +123,15 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
         type: 'text',
         text: `ToDoを追加しました：\n${task}\n締切：${deadlineRaw}`,
       });
-      // ────────────────────────────────────────────────────────────────────
+      return;
     }
   }
 
   res.sendStatus(200);
 });
 
+// ─── 以下、関数定義 ───
 
-// ────────────────────────────────────────────────────────────────────
-// タスク保存：ステータス列をなくして「A～C列（ユーザーID, タスク名, 締切）」のみ
 async function saveTask(userId, task, deadlineRaw) {
   const auth = new google.auth.JWT(
     GOOGLE_CLIENT_EMAIL,
@@ -125,7 +151,6 @@ async function saveTask(userId, task, deadlineRaw) {
   });
 }
 
-// タスク一覧取得：A～C列を取得し、「ユーザーID, タスク名, 締切」の形式
 async function fetchTasks(userId) {
   const auth = new google.auth.JWT(
     GOOGLE_CLIENT_EMAIL,
@@ -142,7 +167,6 @@ async function fetchTasks(userId) {
   return result.data.values || [];
 }
 
-// タスク削除：先頭2列（ユーザーID, タスク名）が一致する行を削除
 async function deleteTask(userId, taskName) {
   const auth = new google.auth.JWT(
     GOOGLE_CLIENT_EMAIL,
@@ -152,14 +176,14 @@ async function deleteTask(userId, taskName) {
   );
   const sheets = google.sheets({ version: 'v4', auth });
 
-  // 1) 全データ取得（A～C列）
+  // 1) 全行取得（A～C列）
   const getRes = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
     range: 'シート1!A:C',
   });
   const rows = getRes.data.values || [];
 
-  // 2) sheetId 取得
+  // 2) sheetId を取得
   const meta = await sheets.spreadsheets.get({
     spreadsheetId: SPREADSHEET_ID,
     includeGridData: false,
@@ -168,7 +192,7 @@ async function deleteTask(userId, taskName) {
   if (!sheetInfo) throw new Error('シート1 が見つかりませんでした。');
   const sheetId = sheetInfo.properties.sheetId;
 
-  // 3) 削除する行インデックスを集める
+  // 3) 削除対象の行を収集
   const deleteRequests = [];
   rows.forEach((row, i) => {
     const [uid, tName] = row;
@@ -193,7 +217,6 @@ async function deleteTask(userId, taskName) {
     spreadsheetId: SPREADSHEET_ID,
     requestBody: { requests: deleteRequests },
   });
-
   return deleteRequests.length;
 }
 
