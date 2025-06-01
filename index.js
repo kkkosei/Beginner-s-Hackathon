@@ -4,12 +4,10 @@ const { middleware, Client } = require('@line/bot-sdk');
 require('dotenv').config();
 const app = express();
 
-
 const lineConfig = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
   channelSecret: process.env.CHANNEL_SECRET,
 };
-
 const lineClient = new Client(lineConfig);
 const GOOGLE_CLIENT_EMAIL = process.env.GOOGLE_CLIENT_EMAIL;
 const GOOGLE_PRIVATE_KEY = process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n');
@@ -23,6 +21,30 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       const userId = event.source.userId;
       const text = event.message.text.trim();
 
+      // ────────────────────────────────────────────────────────────────────
+      // ① 完了メッセージ判定：ステータスを廃止した場合も、完了報告でタスクを削除
+      const completeMatch = text.match(/^(.+?)(?:完了しました|完了)$/);
+      if (completeMatch) {
+        const taskName = completeMatch[1].trim();
+        const deletedCount = await deleteTask(userId, taskName);
+
+        if (deletedCount === 0) {
+          await lineClient.replyMessage(event.replyToken, {
+            type: 'text',
+            text: `「${taskName}」という名前のタスクが見つかりませんでした。`,
+          });
+        } else {
+          await lineClient.replyMessage(event.replyToken, {
+            type: 'text',
+            text: `タスク「${taskName}」をスプレッドシートから削除しました。（${deletedCount} 行）`,
+          });
+        }
+        // 完了処理なので登録処理や一覧処理は行わず return
+        return;
+      }
+      // ────────────────────────────────────────────────────────────────────
+
+      // ── ② 期限（〇〇までのタスク一覧）照会判定 ──
       const deadlineMatch = text.match(/^(\d{4}-\d{2}-\d{2})までのタスクを教えて$/);
       if (deadlineMatch) {
         const untilDate = deadlineMatch[1];
@@ -44,7 +66,6 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
           return;
         }
 
-        // ステータスではなく「タスク名（締切）」だけを並べる
         const message = filtered
           .map(([, task, deadline]) => `・${task}（締切: ${deadline}）`)
           .join('\n');
@@ -55,52 +76,56 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
         });
         return;
       }
+      // ────────────────────────────────────────────────────────────────────
 
-      const parts = text.split(/\s+/); // 空白で分割
-      const [task, deadlineRaw, statusRaw] = parts;
+      // ── ③ 新規タスク登録 ――
+      // 「タスク名 締切」の2要素のみを想定
+      const parts = text.split(/\s+/);
+      const [task, deadlineRaw] = parts;
 
       if (!task || !deadlineRaw) {
         await lineClient.replyMessage(event.replyToken, {
           type: 'text',
-          text: `「タスク名 日付 [ステータス]」の形式で送信してください。\n例: レポート提出 2025-06-02 未完了`,
+          text: `「タスク名 締切日付」の形式で送信してください。\n例: レポート提出 2025-06-02`,
         });
         return;
       }
 
-      const status = statusRaw || '未完了';
-
-      await saveTask(userId, task, deadlineRaw, status);
-
+      await saveTask(userId, task, deadlineRaw);
       await lineClient.replyMessage(event.replyToken, {
         type: 'text',
-        text: `ToDoを追加しました：\n${task}\n締切：${deadlineRaw}\nステータス：${status}`,
+        text: `ToDoを追加しました：\n${task}\n締切：${deadlineRaw}`,
       });
+      // ────────────────────────────────────────────────────────────────────
     }
   }
 
   res.sendStatus(200);
 });
 
-async function saveTask(userId, task, deadlineRaw, status) {
+
+// ────────────────────────────────────────────────────────────────────
+// タスク保存：ステータス列をなくして「A～C列（ユーザーID, タスク名, 締切）」のみ
+async function saveTask(userId, task, deadlineRaw) {
   const auth = new google.auth.JWT(
     GOOGLE_CLIENT_EMAIL,
     null,
     GOOGLE_PRIVATE_KEY,
     ['https://www.googleapis.com/auth/spreadsheets']
   );
-
   const sheets = google.sheets({ version: 'v4', auth });
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
-    range: 'シート1!A:D',
+    range: 'シート1!A:C',
     valueInputOption: 'USER_ENTERED',
     requestBody: {
-      values: [[userId, task, deadlineRaw, status]],
+      values: [[userId, task, deadlineRaw]],
     },
   });
 }
 
+// タスク一覧取得：A～C列を取得し、「ユーザーID, タスク名, 締切」の形式
 async function fetchTasks(userId) {
   const auth = new google.auth.JWT(
     GOOGLE_CLIENT_EMAIL,
@@ -114,10 +139,10 @@ async function fetchTasks(userId) {
     spreadsheetId: SPREADSHEET_ID,
     range: 'シート1!A:C',
   });
-
-  return result.data.values || []; // 1行あたり [ユーザーID, タスク名, 締切]
+  return result.data.values || [];
 }
 
+// タスク削除：先頭2列（ユーザーID, タスク名）が一致する行を削除
 async function deleteTask(userId, taskName) {
   const auth = new google.auth.JWT(
     GOOGLE_CLIENT_EMAIL,
@@ -127,14 +152,14 @@ async function deleteTask(userId, taskName) {
   );
   const sheets = google.sheets({ version: 'v4', auth });
 
-  // A～C列を取得する
+  // 1) 全データ取得（A～C列）
   const getRes = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
     range: 'シート1!A:C',
   });
   const rows = getRes.data.values || [];
 
-  // シート情報から sheetId を取得
+  // 2) sheetId 取得
   const meta = await sheets.spreadsheets.get({
     spreadsheetId: SPREADSHEET_ID,
     includeGridData: false,
@@ -143,7 +168,7 @@ async function deleteTask(userId, taskName) {
   if (!sheetInfo) throw new Error('シート1 が見つかりませんでした。');
   const sheetId = sheetInfo.properties.sheetId;
 
-  // 削除すべき行を列挙（行インデックスは 0ベース）
+  // 3) 削除する行インデックスを集める
   const deleteRequests = [];
   rows.forEach((row, i) => {
     const [uid, tName] = row;
@@ -163,6 +188,7 @@ async function deleteTask(userId, taskName) {
 
   if (deleteRequests.length === 0) return 0;
 
+  // 4) 一括削除実行
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: SPREADSHEET_ID,
     requestBody: { requests: deleteRequests },
@@ -171,9 +197,7 @@ async function deleteTask(userId, taskName) {
   return deleteRequests.length;
 }
 
-
 const PORT = 3000;
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
-
