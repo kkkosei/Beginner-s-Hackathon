@@ -48,7 +48,7 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
   res.sendStatus(200);
 });
 
-async function saveTask(userId, task) {
+async function saveTask(userId, task, deadlineRaw, status) {
   const auth = new google.auth.JWT(
     GOOGLE_CLIENT_EMAIL,
     null,
