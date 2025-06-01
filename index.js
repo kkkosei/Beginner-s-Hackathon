@@ -20,14 +20,27 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
 
   for (const event of events) {
     if (event.type === 'message' && event.message.type === 'text') {
-      const task = event.message.text;
       const userId = event.source.userId;
+      const text = event.message.text.trim();
 
-      await saveTask(userId, task);
+      const parts = text.split(/\s+/); // 空白で分割
+      const [task, deadlineRaw, statusRaw] = parts;
+
+      if (!task || !deadlineRaw) {
+        await lineClient.replyMessage(event.replyToken, {
+          type: 'text',
+          text: `「タスク名 日付 [ステータス]」の形式で送信してください。\n例: レポート提出 2025-06-02 未完了`,
+        });
+        return;
+      }
+
+      const status = statusRaw || '未完了';
+
+      await saveTask(userId, task, deadlineRaw, status);
 
       await lineClient.replyMessage(event.replyToken, {
         type: 'text',
-        text: `ToDoを追加しました：${task}`,
+        text: `ToDoを追加しました：\n${task}\n締切：${deadlineRaw}\nステータス：${status}`,
       });
     }
   }
@@ -44,14 +57,13 @@ async function saveTask(userId, task) {
   );
 
   const sheets = google.sheets({ version: 'v4', auth });
-  const now = new Date().toISOString();
 
   await sheets.spreadsheets.values.append({
     spreadsheetId: SPREADSHEET_ID,
     range: 'シート1!A:D',
     valueInputOption: 'USER_ENTERED',
     requestBody: {
-      values: [[userId, task, '未完了']],
+      values: [[userId, task, deadlineRaw, status]],
     },
   });
 }
