@@ -23,6 +23,38 @@ app.post('/webhook', middleware(lineConfig), async (req, res) => {
       const userId = event.source.userId;
       const text = event.message.text.trim();
 
+      const deadlineMatch = text.match(/^(\d{4}-\d{2}-\d{2})までのタスクを教えて$/);
+      if (deadlineMatch) {
+        const untilDate = deadlineMatch[1];
+
+        const tasks = await fetchTasks(userId);
+        const filtered = tasks.filter(([uid, , deadline]) => {
+          if (uid !== userId) return false;
+          const today = new Date();
+          const due = new Date(deadline);
+          const until = new Date(untilDate);
+          return due >= today && due <= until;
+        });
+
+        if (filtered.length === 0) {
+          await lineClient.replyMessage(event.replyToken, {
+            type: 'text',
+            text: `指定された期間のタスクは見つかりませんでした。`,
+          });
+          return;
+        }
+
+        const message = filtered.map(([, task, deadline, status]) =>
+          `・${task}（締切: ${deadline}, 状態: ${status}）`
+        ).join('\n');
+
+        await lineClient.replyMessage(event.replyToken, {
+          type: 'text',
+          text: `以下が${untilDate}までのタスクです：\n${message}`,
+        });
+        return;
+      }
+
       const parts = text.split(/\s+/); // 空白で分割
       const [task, deadlineRaw, statusRaw] = parts;
 
@@ -66,6 +98,24 @@ async function saveTask(userId, task, deadlineRaw, status) {
       values: [[userId, task, deadlineRaw, status]],
     },
   });
+}
+
+async function fetchTasks(userId) {
+  const auth = new google.auth.JWT(
+    GOOGLE_CLIENT_EMAIL,
+    null,
+    GOOGLE_PRIVATE_KEY,
+    ['https://www.googleapis.com/auth/spreadsheets']
+  );
+
+  const sheets = google.sheets({ version: 'v4', auth });
+
+  const result = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range: 'シート1!A:D',
+  });
+
+  return result.data.values || [];
 }
 
 const PORT = 3000;
